@@ -4,13 +4,20 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const session = require("express-session");
 const mongodbSession = require("connect-mongodb-session")(session);
+const jwt = require("jsonwebtoken");
 
 //file-import
-const { userDataValidation, isEmailRgex } = require("./utils/authUtil");
+const {
+  userDataValidation,
+  isEmailRgex,
+  genrateToken,
+  sendVerificationMail,
+} = require("./utils/authUtil");
 const userModel = require("./models/userModel");
 const { isAuth } = require("./middleware/isAuth");
 const { todoDataValidation } = require("./utils/todoUtils");
 const todoModel = require("./models/todoModel");
+const rateLimiting = require("./middleware/rateLimiting");
 
 //constants
 const app = express();
@@ -35,7 +42,6 @@ mongoose
 app.set("view engine", "ejs");
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static('public'))
 
 app.use(
   session({
@@ -45,6 +51,8 @@ app.use(
     saveUninitialized: false,
   })
 );
+
+app.use(express.static("public"));
 
 app.get("/", (req, res) => {
   return res.render("server");
@@ -97,6 +105,12 @@ app.post("/register-user", async (req, res) => {
     //store the data
     const userDb = await userObj.save();
 
+    //genrate token
+    const verifiedToken = genrateToken(email);
+
+    //send mail with token
+    sendVerificationMail(email, verifiedToken);
+
     return res.redirect("/login");
   } catch (error) {
     return res.send({
@@ -135,6 +149,14 @@ app.post("/login-user", async (req, res) => {
       });
     }
 
+    //check if email is verified or not
+    if (!userDb.isEmailVerified) {
+      return res.send({
+        status: 400,
+        message: "Please verify your mail before login.",
+      });
+    }
+
     //compare the password
 
     const isMatched = await bcrypt.compare(password, userDb.password);
@@ -147,19 +169,16 @@ app.post("/login-user", async (req, res) => {
     }
 
     //session base auth
-    console.log("SESSION",req.session);
-    req.session.isAuth=true;
-    req.session.user={
-      username:userDb.username,
-      email:userDb.email,
-      userId:userDb._id
+
+    console.log(req.session);
+    req.session.isAuth = true;
+    req.session.user = {
+      username: userDb.username,
+      email: userDb.email,
+      userId: userDb._id, //BSON error userDb._id.toString()
     };
 
-
-
-    
-
-    return res.render("dashboard");
+    return res.redirect("/dashboard");
   } catch (error) {
     return res.send({
       status: 500,
@@ -169,24 +188,38 @@ app.post("/login-user", async (req, res) => {
   }
 });
 
+//verify the token
 
+app.get("/verifytoken/:token", async (req, res) => {
+  console.log(req.params);
+  const token = req.params.token;
+  jwt.verify(token, process.env.SECRET_KEY, async (err, userInfo) => {
+    try {
+      await userModel.findOneAndUpdate(
+        { email: userInfo },
+        { isEmailVerified: true }
+      );
 
+      return res.redirect("/login");
+    } catch (error) {
+      return res.status(500).json("Internal server error");
+    }
+  });
+});
 
-
-app.post('/dashboard',isAuth,(req,res)=>{
+app.get("/dashboard", isAuth, (req, res) => {
   return res.render("dashboard");
+});
 
+app.post("/logout", isAuth, (req, res) => {
+  console.log(req.session);
+  req.session.destroy((err) => {
+    if (err) throw err;
+    console.log(req.session);
 
-})
-
-app.post('/logout',isAuth,(req,res)=>{
-  console.log("session for delete",req.session);
-  req.session.destroy((err)=>{
-    if(err) throw err;
     return res.redirect("/login");
-  })
-
-})
+  });
+});
 
 app.post("/logout_from_all_devices", isAuth, async (req, res) => {
   console.log(req.session);
@@ -215,31 +248,34 @@ app.post("/logout_from_all_devices", isAuth, async (req, res) => {
   }
 });
 
-//API for Storing todo in the database
-app.post('/create-item',isAuth,async(req,res)=>{
-  console.log("THE USER TODO",req.body);
-  const todoText=req.body.todo;
-  const username=req.session.user.username;
+//todo api's
 
-  //validating the todo
-  try{
-    await todoDataValidation({todoText});
-   }catch(error){
+//create
+app.post("/create-item", isAuth, rateLimiting, async (req, res) => {
+  const todoText = req.body.todo;
+  const username = req.session.user.username;
+  try {
+    await todoDataValidation({ todoText });
+  } catch (error) {
     return res.send({
-      status:400,
-      message:error
-      
-    })
+      status: 400,
+      message: error,
+    });
   }
-  // return res.send("YOUR TODO IS ADDED");
 
-  const todoObj=new todoModel({
-    todo:todoText,
-    username:username
-  })
+  const todoObj = new todoModel({
+    todo: todoText,
+    username: username,
+  });
 
-  try{
-    const todoDb=await todoObj.save();
+  try {
+    const todoDb = await todoObj.save();
+
+    // const todoDb = await todoModel.create({
+    //   todo: todoText,
+    //   username: username,
+    // });
+
     return res.send({
       status: 201,
       message: "Todo created successfully",
@@ -252,10 +288,10 @@ app.post('/create-item',isAuth,async(req,res)=>{
       error: error,
     });
   }
-})
+});
 
-//API FFOR READING TODO'S
-
+//read
+//read-item?skip=10
 app.get("/read-item", isAuth, async (req, res) => {
   const username = req.session.user.username;
   const SKIP = Number(req.query.skip) || 0;
@@ -305,34 +341,7 @@ app.get("/read-item", isAuth, async (req, res) => {
   }
 });
 
-/*app.get('/read-item',isAuth,async (req,res)=>{
-  const username=req.session.user.username;
-  try{
-    const todoDb= await todoModel.find({username});
-    if(todoDb.length==0){
-      return res.send({
-        status:204,
-        message:"No Todo's found"
-      })
-    }
-    console.log("GETTING TODO FOR READING", todoDb);
-    return res.send({
-      status:200,
-      message:"Reading is successful",
-      data:todoDb
-    })
-
-  }catch(error){
-    return res.send({
-      status:500,
-      message:"Internal server error",
-      error:error
-    }
-    )
-  }
-})*/
-
-//API FOR EDITING THE TODO
+//edit
 app.post("/edit-item", isAuth, async (req, res) => {
   const { todoId, newData } = req.body;
   const username = req.session.user.username;
@@ -453,6 +462,7 @@ app.delete("/delete-item", isAuth, async (req, res) => {
 
   //edit the todo
 });
+
 app.listen(PORT, () => {
   console.log("Server is running:");
   console.log(`http://localhost:${PORT}/`);
