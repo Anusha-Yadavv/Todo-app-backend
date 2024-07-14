@@ -46,9 +46,10 @@ const sendVerificationMail = (email, verifiedToken) => {
     },
   });
 
+  const verificationUrl=`https://todo-app-backend-x91k.onrender.com/verifytoken/${verifiedToken}`
   //mail options
   const mailOptions = {
-    from: "kssinghkaran@gmail.com",
+    from: "anu468mjl@gmail.com",
     to: email,
     subject: "Email verification for TODO App",
     html: `<head>
@@ -83,7 +84,7 @@ const sendVerificationMail = (email, verifiedToken) => {
           </tr>
           <tr>
             <td style="color: #153643; font-family: Arial, sans-serif; font-size: 16px; line-height: 24px; padding: 20px 0 30px 0;">
-            <a href="http://localhost:8000/verifytoken/${verifiedToken}" style=" border: none;
+            <a href="${verificationUrl}" style=" border: none;
             background-color: #ef7e5c;
     color: white;
     padding: 15px 32px;
